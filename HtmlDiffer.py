@@ -1,11 +1,11 @@
-### HtmlDiffクラスでファイルを比較
+### HtmlDiffクラスでファイルを比較(UTF-8対応版)
 import os
 import difflib
 
 dir_path = r'./'
 
-file1_name = 'DigitalWorkshop.py'
-file2_name = 'DigitalWorkshop_withDeepFace.py'
+file1_name = 'before.py'
+file2_name = 'After.py'
 
 file1_path = os.path.join(dir_path, file1_name)
 file2_path = os.path.join(dir_path, file2_name)
