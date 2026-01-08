@@ -180,7 +180,9 @@ def main():
         faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5, minSize=(80, 80))
         for (x, y, w, h) in faces:
             # 顔枠（緑）
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
+            #cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
+            
+            # 顔のグレースケールとRGB
             face_gray = gray[y:y + h, x:x + w]
             face_bgr  = frame[y:y + h, x:x + w]
 
@@ -265,6 +267,7 @@ def main():
                 else:
                     cv2.rectangle(frame, (x + mx, abs_my), (x + mx + mw, abs_my + mh), (0, 0, 255), 2)
 
+            """
             # ===== 年齢・性別 =====
             info_text = "Age/Gender: N/A"
             res = predict_age_gender(face_bgr, age_net, gender_net)
@@ -279,6 +282,7 @@ def main():
                 ty = y + h + th + 10
             cv2.rectangle(frame, (tx, ty - th - base), (tx + tw, ty + base), (0, 0, 0), -1)
             cv2.putText(frame, info_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
+            """
 
         cv2.imshow(WINDOW_NAME, frame)
         key = cv2.waitKey(1) & 0xFF
