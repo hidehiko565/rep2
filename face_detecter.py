@@ -9,6 +9,7 @@
 import cv2
 import numpy as np
 import os, platform, time
+from enum import Enum, auto
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 WINDOW_NAME = "Eyes Overlay / Nose / Mouth + Age&Gender"  # ← 1つに統一
@@ -32,6 +33,13 @@ MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)  # BGR
 # ===== 表示保持のパラメータ =====
 HOLD_SEC = 0.5   # 検出が途切れた後も目画像を出し続ける秒数
 SMOOTHING = 0  # 位置の平滑化係数（0=なし, 0.2〜0.5推奨）
+
+class Mode(Enum):
+    TEXT = auto()
+    ICON = auto()
+
+MODE = Mode.ICON 
+#MODE = Mode.TEXT
 
 def log(msg):
     print(msg, flush=True)
@@ -114,6 +122,9 @@ def smooth_box(prev, new, alpha):
     return (sx, sy, sw, sh)
 
 def main():
+    # モード：テキストモードかアイコンモードか
+    log(f"[INFO] MODE: {'ICON' if MODE == Mode.ICON else 'TEXT'}")
+
     # 目画像
     left_eye_img  = cv2.imread(L_EYE_IMG_PATH,  cv2.IMREAD_UNCHANGED)
     right_eye_img = cv2.imread(R_EYE_IMG_PATH, cv2.IMREAD_UNCHANGED)
@@ -210,7 +221,11 @@ def main():
             # 表示（検出あり or 保持時間以内）
             if left_state["last_box"] is not None and (now - left_state["last_time"] <= HOLD_SEC):
                 bx, by, bw, bh = left_state["last_box"]
-                overlay_image(frame, left_eye_img, bx, by, bw, bh, force_opaque=False)
+                if (left_eye_img is not None) and MODE == Mode.ICON:
+                    overlay_image(frame, left_eye_img, bx, by, bw, bh, force_opaque=False)
+                else:
+                    cv2.rectangle(frame, (x + ex, y + ey), (x + ex + ew, y + ey + eh), (0, 0, 255), 2)
+                    cv2.putText(frame, "Left Eye", (x + ex, y + ey - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
 
             # ---- 右目：検出があれば更新、無ければ保持表示 ----
             if re_detect is not None:
@@ -222,7 +237,11 @@ def main():
                 right_state["last_time"] = now
             if right_state["last_box"] is not None and (now - right_state["last_time"] <= HOLD_SEC):
                 bx, by, bw, bh = right_state["last_box"]
-                overlay_image(frame, right_eye_img, bx, by, bw, bh, force_opaque=False)
+                if (right_eye_img is not None) and MODE == Mode.ICON:
+                    overlay_image(frame, right_eye_img, bx, by, bw, bh, force_opaque=False)
+                else:
+                    cv2.rectangle(frame, (abs_ex, y + ey), (abs_ex + ew, y + ey + eh), (0, 0, 255), 2)
+                    cv2.putText(frame, "Right Eye", (abs_ex, y + ey - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
 
             # ===== 鼻（中央帯） =====
             band_top = int(h * 0.35); band_bottom = int(h * 0.75)
@@ -233,7 +252,7 @@ def main():
             if nose_box is not None:
                 nx, ny, nw, nh = nose_box
                 abs_ny = y + band_top + ny
-                if nose_img is not None:
+                if (nose_img is not None) and MODE == Mode.ICON:
                     overlay_image(frame, nose_img, x + nx, abs_ny, nw, nh, force_opaque=False)
                 else:
                     cv2.rectangle(frame, (x + nx, abs_ny), (x + nx + nw, abs_ny + nh), (0, 0, 255), 2)
@@ -262,12 +281,11 @@ def main():
             if mouth_box is not None:
                 mx, my, mw, mh = mouth_box
                 abs_my = y + mouth_top_rel + my
-                if mouth_img is not None:
+                if (mouth_img is not None) and MODE == Mode.ICON:
                     overlay_image(frame, mouth_img, x + mx, abs_my, mw, mh, force_opaque=False)
                 else:
                     cv2.rectangle(frame, (x + mx, abs_my), (x + mx + mw, abs_my + mh), (0, 0, 255), 2)
 
-            """
             # ===== 年齢・性別 =====
             info_text = "Age/Gender: N/A"
             res = predict_age_gender(face_bgr, age_net, gender_net)
@@ -282,7 +300,6 @@ def main():
                 ty = y + h + th + 10
             cv2.rectangle(frame, (tx, ty - th - base), (tx + tw, ty + base), (0, 0, 0), -1)
             cv2.putText(frame, info_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
-            """
 
         cv2.imshow(WINDOW_NAME, frame)
         key = cv2.waitKey(1) & 0xFF
