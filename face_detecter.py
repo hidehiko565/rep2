@@ -29,7 +29,8 @@ class Mode(Enum):
     TEXT = auto()
     ICON = auto()
 # 初期表示モードはアイコン（画像オーバーレイ）を使用
-MODE = Mode.ICON 
+MODE = Mode.ICON
+MODE = Mode.TEXT
 
 # ===== DNN（年齢・性別） =====
 AGE_PROTO    = os.path.join(BASE, "models", "age_deploy.prototxt")
@@ -136,13 +137,14 @@ mouth_state = {
 }
 # しきい値（環境に合わせて微調整推奨）
 MOUTH_THRESH = {
-    "aspect_i": 2.2,        # 「い」：より横長（aspect>=2.2）
-    "aspect_wide": 1.6,     # 「え」：横長の目安（あなたの計測値 ≈1.67 に合わせる）
-    "aspect_round_low": 0.90,
-    "aspect_round_high": 1.30,
-    "area_small": 0.020,    # 「う」：面積小（現状 0.064 なので 'う' は成立しない＝誤判定防止）
-    "h_open_a": 0.48,       # 「あ」：開口大（探索帯基準で 0.22 以上を 'あ'）
-    "h_open_low": 0.30,     # 小〜中開口（探索帯基準）
+    "aspect_i": 2.0,      # 「い」：横長（緩める）
+    "aspect_wide": 1.60,  # 「え」：横長
+    "aspect_round_low": 0.85,   # 丸さを広めに
+    "aspect_round_high": 1.35,
+    "area_small": 0.045,  # 「う」：小面積（緩める）
+    "h_open_a": 0.48,     # 「あ」：大開口（探索帯基準）
+    "h_open_low": 0.30,   # 小〜中開口（探索帯基準）
+    "h_open_i": 0.22,     # 「い」専用の“小開口”閾値（探索帯基準）
 }
 
 # ラベル切替のデバウンス秒数（この時間、新ラベルが継続したら確定）
@@ -172,8 +174,8 @@ def classify_mouth_shape(mouth_box, face_box, mouth_ref_h=None):
     #print(f"[DBG] aspect={aspect:.2f}, area_ratio={area_ratio:.4f}, h_ratio={h_ratio:.4f}")
 
     # 優先順：い → え → う → お → 最後に「あ」
-    # 「い」：横に強く引かれ、開口が小さい
-    if aspect >= T["aspect_i"] and h_ratio <= T["h_open_low"]:
+    # 「い」：横に強く引かれ、開口が小さい（い専用閾値 T["h_open_i"] を使用）
+    if aspect >= T["aspect_i"] and h_ratio <= T["h_open_i"]:
         return "i"
     # 「え」：横長＋中開口
     if aspect >= T["aspect_wide"] and (T["h_open_low"] < h_ratio < T["h_open_a"]):
@@ -181,8 +183,8 @@ def classify_mouth_shape(mouth_box, face_box, mouth_ref_h=None):
     # 「う」：丸＋面積小（すぼめ）
     if (T["aspect_round_low"] <= aspect <= T["aspect_round_high"]) and (area_ratio <= T["area_small"]):
         return "u"
-    # 「お」：丸（面積が「う」ほど小さくない）
-    if (T["aspect_round_low"] <= aspect <= T["aspect_round_high"]):
+    # 「お」：丸（面積が「う」ほど小さくない＝中〜大）
+    if (T["aspect_round_low"] <= aspect <= T["aspect_round_high"]) and (area_ratio > T["area_small"]):
         return "o"
     # 最後に「あ」：開口大
     if h_ratio >= T["h_open_a"]:
@@ -210,10 +212,12 @@ def debounce_mouth_label(last_label, last_change_ts, new_label, now, debounce_se
         return last_label, last_change_ts
 
 def main():
+    # 変数名定義
     left_eye_img = None
     right_eye_img = None
     mouth_img = None
     nose_img = None
+    MOUTH_MAP = {}
 
     # モード：テキストモードかアイコンモードか
     if MODE == Mode.ICON:
@@ -241,13 +245,13 @@ def main():
         log(f"[INFO] mouth_e.png: {'OK' if mouth_e_img is not None else 'MISSING'}")
         log(f"[INFO] mouth_o.png: {'OK' if mouth_o_img is not None else 'MISSING'}")
         # マップ（ラベル → 画像）
-        MOUTH_MAP = {
+        MOUTH_MAP.update({
             "a": mouth_a_img,
             "i": mouth_i_img,
             "u": mouth_u_img,
             "e": mouth_e_img,
             "o": mouth_o_img,
-        }
+        })
 
     else:
         log(f"[INFO] MODE: TEXT")
@@ -411,26 +415,36 @@ def main():
                     mouth_state.get("last_label"), mouth_state.get("last_label_change", 0.0),
                     new_label, now, MOUTH_DEBOUNCE_SEC
                 )
-                # 選択画像（フォールバック mouth_img も可）
-                sel_img = MOUTH_MAP.get(mouth_state.get("last_label"))
-                if sel_img is None:
-                    sel_img = mouth_img
-                if (sel_img is not None) and MODE == Mode.ICON:
-                    overlay_image(frame, sel_img, bbox[0], bbox[1], bbox[2], bbox[3], force_opaque=False)
+                # 表示（モードごとに分岐）
+                if MODE == Mode.ICON:
+                    sel_img = MOUTH_MAP.get(mouth_state["last_label"])
+                    if sel_img is None:
+                        sel_img = mouth_img
+                    if sel_img is not None:
+                        overlay_image(frame, sel_img, bbox[0], bbox[1], bbox[2], bbox[3], force_opaque=False)
+                    else:
+                        cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), (0, 0, 255), 2)
                 else:
+                    # TEXTモードは画像を使わず矩形／ラベル表示
                     cv2.rectangle(frame, (bbox[0], bbox[1]), (bbox[0] + bbox[2], bbox[1] + bbox[3]), (0, 0, 255), 2)
+                    cv2.putText(frame, f"Mouth({mouth_state.get('last_label','-')})",
+                                (bbox[0], bbox[1] - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 1, cv2.LINE_AA)
                 # 保持ステート更新
                 mouth_state["last_box"]  = bbox
                 mouth_state["last_time"] = now
             # 検出が無くても保持時間内は直前ラベルの画像を表示
             if mouth_state["last_box"] is not None and (now - mouth_state["last_time"] <= HOLD_SEC):
                 bx, by, bw, bh = mouth_state["last_box"]
-                sel_img = MOUTH_MAP.get(mouth_state.get("last_label"))
-                if sel_img is None:
-                    sel_img = mouth_img
-                if (sel_img is not None) and MODE == Mode.ICON:
-                    overlay_image(frame, sel_img, bx, by, bw, bh, force_opaque=False)
+                if MODE == Mode.ICON:
+                    sel_img = MOUTH_MAP.get(mouth_state.get("last_label"))
+                    if sel_img is None:
+                        sel_img = mouth_img
+                    if sel_img is not None:
+                        overlay_image(frame, sel_img, bx, by, bw, bh, force_opaque=False)
+                    else:
+                        cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
                 else:
+                    # TEXTモードは矩形のみ
                     cv2.rectangle(frame, (bx, by), (bx + bw, by + bh), (0, 0, 255), 2)
 
             # ===== 年齢・性別 =====
@@ -455,8 +469,14 @@ def main():
         # ===== 手動調整用 =====
         # しきい値の画面表示（左上）
         cv2.putText(frame,
-                    f"aspect_wide={MOUTH_THRESH['aspect_wide']:.2f}  h_open_low={MOUTH_THRESH['h_open_low']:.2f}  h_open_a={MOUTH_THRESH['h_open_a']:.2f}",
-                    (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+                    (f"aspect_i={MOUTH_THRESH['aspect_i']:.2f}  "
+                     f"aspect_wide={MOUTH_THRESH['aspect_wide']:.2f}  "
+                     f"round=[{MOUTH_THRESH['aspect_round_low']:.2f},{MOUTH_THRESH['aspect_round_high']:.2f}]  "
+                     f"area_small={MOUTH_THRESH['area_small']:.3f}  "
+                     f"h_open_i={MOUTH_THRESH['h_open_i']:.2f}  "
+                     f"h_open_low={MOUTH_THRESH['h_open_low']:.2f}  "
+                     f"h_open_a={MOUTH_THRESH['h_open_a']:.2f}"),
+                    (10, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.58, (0,255,0), 2)
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             log("[INFO] Quit"); break
@@ -469,6 +489,21 @@ def main():
             MOUTH_THRESH["h_open_low"] = min(MOUTH_THRESH["h_open_a"] - 0.02, MOUTH_THRESH["h_open_low"] + 0.02)
         elif key == ord(';'):  # 小〜中開口の境界を下げる（「え」を出やすく）
             MOUTH_THRESH["h_open_low"] = max(0.05, MOUTH_THRESH["h_open_low"] - 0.02)
+        # 追加ホットキー：い/う/おの調整
+        elif key == ord('i'):  # 「い」を出やすく（aspect_i を下げる）
+            MOUTH_THRESH["aspect_i"] = max(1.6, MOUTH_THRESH["aspect_i"] - 0.1)
+        elif key == ord('I'):  # 「い」を出にくく（aspect_i を上げる）
+            MOUTH_THRESH["aspect_i"] = min(3.0, MOUTH_THRESH["aspect_i"] + 0.1)
+        elif key == ord('u'):  # 「う」を出やすく（area_small を上げる）
+            MOUTH_THRESH["area_small"] = min(0.20, MOUTH_THRESH["area_small"] + 0.005)
+        elif key == ord('U'):  # 「う」を出にくく（area_small を下げる）
+            MOUTH_THRESH["area_small"] = max(0.005, MOUTH_THRESH["area_small"] - 0.005)
+        elif key == ord('o'):  # 「お」を出やすく（丸さ範囲を広げる）
+            MOUTH_THRESH["aspect_round_low"] = max(0.70, MOUTH_THRESH["aspect_round_low"] - 0.02)
+            MOUTH_THRESH["aspect_round_high"] = min(1.60, MOUTH_THRESH["aspect_round_high"] + 0.02)
+        elif key == ord('O'):  # 「お」を出にくく（丸さ範囲を狭める）
+            MOUTH_THRESH["aspect_round_low"] = min(MOUTH_THRESH["aspect_round_high"] - 0.05, MOUTH_THRESH["aspect_round_low"] + 0.02)
+            MOUTH_THRESH["aspect_round_high"] = max(MOUTH_THRESH["aspect_round_low"] + 0.05, MOUTH_THRESH["aspect_round_high"] - 0.02)
         # ===== 手動調整用 =====
 
     cap.release()
