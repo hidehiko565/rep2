@@ -19,6 +19,11 @@ L_EYE_IMG_PATH = os.path.join(BASE, "assets", "left_eye.png")
 R_EYE_IMG_PATH = os.path.join(BASE, "assets", "right_eye.png")
 MOUTH_IMG_PATH = os.path.join(BASE, "assets", "mouth.png")
 NOSE_IMG_PATH  = os.path.join(BASE, "assets", "nose.png")
+class Mode(Enum):
+    TEXT = auto()
+    ICON = auto()
+MODE = Mode.ICON 
+MODE = Mode.TEXT
 
 # ===== DNN（年齢・性別） =====
 AGE_PROTO    = os.path.join(BASE, "models", "age_deploy.prototxt")
@@ -34,12 +39,6 @@ MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)  # BGR
 HOLD_SEC = 0.5   # 検出が途切れた後も目画像を出し続ける秒数
 SMOOTHING = 0  # 位置の平滑化係数（0=なし, 0.2〜0.5推奨）
 
-class Mode(Enum):
-    TEXT = auto()
-    ICON = auto()
-
-MODE = Mode.ICON 
-#MODE = Mode.TEXT
 
 def log(msg):
     print(msg, flush=True)
@@ -122,18 +121,26 @@ def smooth_box(prev, new, alpha):
     return (sx, sy, sw, sh)
 
 def main():
-    # モード：テキストモードかアイコンモードか
-    log(f"[INFO] MODE: {'ICON' if MODE == Mode.ICON else 'TEXT'}")
+    left_eye_img = None
+    right_eye_img = None
+    mouth_img = None
+    nose_img = None
 
-    # 目画像
-    left_eye_img  = cv2.imread(L_EYE_IMG_PATH,  cv2.IMREAD_UNCHANGED)
-    right_eye_img = cv2.imread(R_EYE_IMG_PATH, cv2.IMREAD_UNCHANGED)
-    mouth_img     = cv2.imread(MOUTH_IMG_PATH, cv2.IMREAD_UNCHANGED)
-    nose_img      = cv2.imread(NOSE_IMG_PATH, cv2.IMREAD_UNCHANGED)
-    log(f"[INFO] left_eye.png: {'OK' if left_eye_img is not None else 'MISSING'}")
-    log(f"[INFO] right_eye.png: {'OK' if right_eye_img is not None else 'MISSING'}")
-    log(f"[INFO] mouse.png: {'OK' if mouth_img is not None else 'MISSING'}")
-    log(f"[INFO] nose.png: {'OK' if nose_img is not None else 'MISSING'}")
+    # モード：テキストモードかアイコンモードか
+    if MODE == Mode.ICON:
+        log(f"[INFO] MODE: {'ICON'}")
+
+        # 画像
+        left_eye_img  = cv2.imread(L_EYE_IMG_PATH,  cv2.IMREAD_UNCHANGED)
+        right_eye_img = cv2.imread(R_EYE_IMG_PATH, cv2.IMREAD_UNCHANGED)
+        mouth_img     = cv2.imread(MOUTH_IMG_PATH, cv2.IMREAD_UNCHANGED)
+        nose_img      = cv2.imread(NOSE_IMG_PATH, cv2.IMREAD_UNCHANGED)
+        log(f"[INFO] left_eye.png: {'OK' if left_eye_img is not None else 'MISSING'}")
+        log(f"[INFO] right_eye.png: {'OK' if right_eye_img is not None else 'MISSING'}")
+        log(f"[INFO] mouse.png: {'OK' if mouth_img is not None else 'MISSING'}")
+        log(f"[INFO] nose.png: {'OK' if nose_img is not None else 'MISSING'}")
+    else:
+        log(f"[INFO] MODE: TEXT")
 
     # Haar
     hb = cv2.data.haarcascades
