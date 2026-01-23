@@ -29,23 +29,30 @@ from PIL import Image, ImageColor
 # 入力PDF
 INPUT_PDF   = "20251008_2.pdf"
 # 出力動画
-OUTPUT_MP4  = "20251008_2.mp4"
-# BGM（未指定 or ファイル無しなら無音）
+OUTPUT_MP4  = "20251008_2_1.mp4"
+# BGMのファイルと音量（0.0〜1.0）
 BGM_PATH    = "Escort.mp3"
+BGM_VOLUME  = 0.3
+# 事前に作った読み上げ音声と音量（0.0〜1.0）
+VOICE_PATH   = "voice.wav"
+VOICE_VOLUME = 1.0
 # 幅（偶数推奨）
 WIDTH       = 1920
 # 高さ（偶数推奨）
 HEIGHT      = 1080
 # PDFレンダリングDPI
 DPI         = 200
-# 1ページの表示秒数
-DURATION    = 5.0
+
+# 最初のページとそれ以外で秒数を分ける
+# 最初のページの表示秒数
+FIRST_DURATION  =  5
+# 2ページ目以降の表示秒数
+OTHER_DURATION  = 10
+
 # クロスフェード秒（0で無効、DURATIONより短く）
 CROSSFADE   = 1.0
 # フレームレート
 FPS         = 30
-# BGM音量（0.0〜1.0）
-BGM_VOLUME  = 0.6
 # 余白色（黒）
 BGCOLOR     = "#000000"
 # "auto" | "pymupdf" | "pdf2image"
@@ -56,6 +63,7 @@ BACKEND     = "auto"
 from moviepy.video.VideoClip import ImageClip
 from moviepy.video.compositing.concatenate import concatenate_videoclips
 from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+from moviepy.audio.AudioClip import CompositeAudioClip
 from moviepy.audio.io.AudioFileClip import AudioFileClip
 import moviepy.video.fx.all as vfx
 import moviepy.audio.fx.all as afx
@@ -132,37 +140,52 @@ def pad_to_resolution(img: Image.Image, target_size: Tuple[int, int], bg_color=(
     canvas.paste(resized, (ox, oy))
     return canvas
 
-
-def crossfade_compose(clips: List[ImageClip], overlap: float, size: Tuple[int, int]) -> CompositeVideoClip:
+def crossfade_compose_var(
+    clips: List[ImageClip],
+    durations: List[float],
+    base_overlap: float,
+    size: Tuple[int, int],
+) -> CompositeVideoClip:
     """
-    crossfadein を使わずにクロスフェードを実現する。
-    - 各クリップの末尾を fadeout(overlap)
-    - 次クリップの先頭を fadein(overlap)
-    - それぞれの start を (i * (dur - overlap)) にずらして重ねる
+    可変長クリップ用クロスフェード合成。
+    - クリップ i の開始時刻は sum_{k < i} (durations[k] - ov_{k,k+1})
+    - ov_{i-1,i} = min(base_overlap, durations[i-1], durations[i]) で安全に制限
+    - フェードは各ペアの ov を用いて fadeout/fadein を適用
     """
-    if overlap <= 0 or len(clips) == 1:
-        # フォールバック：単純結合
-        return concatenate_videoclips(clips, method="compose")
+    n = len(clips)
+    if n == 0:
+        raise ValueError("clips が空です。")
+    if n != len(durations):
+        raise ValueError("clips と durations の長さが一致しません。")
 
-    DUR = float(clips[0].duration)
-    OVER = float(overlap)
-    if OVER >= DUR:
-        raise ValueError("CROSSFADE は DURATION より短くしてください。")
+    # オーバーラップ秒（ペアごとに算出）
+    pair_overlap = [0.0] * (n - 1)
+    if base_overlap > 0:
+        for i in range(1, n):
+            pair_overlap[i - 1] = max(
+                0.0, min(base_overlap, float(durations[i - 1]), float(durations[i]))
+            )
 
-    layered = []
+    # 時間配置：start[i] = Σ_{k < i} (durations[k] - ov_{k,k+1})
+    starts = [0.0] * n
+    for i in range(1, n):
+        starts[i] = starts[i - 1] + float(durations[i - 1]) - pair_overlap[i - 1]
+
+    # フェード適用＆合成レイヤー作成
+    layers = []
     for i, c in enumerate(clips):
-        cc = c
-        if i > 0:
-            cc = cc.fx(vfx.fadein, OVER)
-        if i < len(clips) - 1:
-            cc = cc.fx(vfx.fadeout, OVER)
-        start_t = i * (DUR - OVER)
-        cc = cc.set_start(start_t)
-        layered.append(cc)
+        cc = c.set_duration(float(durations[i]))
+        # 前との重なり（フェードイン）
+        if i > 0 and pair_overlap[i - 1] > 0:
+            cc = cc.fx(vfx.fadein, pair_overlap[i - 1])
+        # 次との重なり（フェードアウト）
+        if i < n - 1 and pair_overlap[i] > 0:
+            cc = cc.fx(vfx.fadeout, pair_overlap[i])
+        cc = cc.set_start(starts[i])
+        layers.append(cc)
 
-    total_duration = (len(clips) - 1) * (DUR - OVER) + DUR
-    return CompositeVideoClip(layered, size=size).set_duration(total_duration)
-
+    total_duration = starts[-1] + float(durations[-1])
+    return CompositeVideoClip(layers, size=size).set_duration(total_duration)
 
 def main():
     # 入力PDFチェック
@@ -192,62 +215,151 @@ def main():
     print("[INFO] 解像度にパディング中 ...")
     slides = [pad_to_resolution(p, size, bg_color) for p in pages]
 
+
+    # --- 可変秒数リストを作成 ---
+    # 例：12ページあるPDFに対してページごと秒数を指定
+    #per_page = [6, 4, 4, 8, 3, 4, 4, 5, 5, 3, 4, 4]
+    #durations = per_page[:len(pages)]
+    durations: List[float] = []
+    for idx in range(len(pages)):
+        if idx == 0:
+            durations.append(float(FIRST_DURATION))
+        else:
+            durations.append(float(OTHER_DURATION))
+
     print("[INFO] クリップを生成中 ...")
     clips: List[ImageClip] = []
-    for im in slides:
+    for im, dur in zip(slides, durations):
         frame = np.array(im)  # RGB
-        clip = ImageClip(frame).set_duration(float(DURATION))
-        # 必要ならスライド個別にフェード（任意・好みで有効化）
-        # fade_len = min(1.0, DURATION / 4)
+        clip = ImageClip(frame).set_duration(dur)
+        # スライド個別フェード（任意でONにするなら以下2行のコメントを外す）
+        # fade_len = min(1.0, dur / 4)
         # clip = clip.fx(vfx.fadein, fade_len).fx(vfx.fadeout, fade_len)
         clips.append(clip)
 
-    # 映像の合成
+    # --- 映像の合成 ---
     if len(clips) == 1 or float(CROSSFADE) <= 0:
         print("[INFO] クロスフェードなしで結合します。")
         video = concatenate_videoclips(clips, method="compose")
     else:
-        print(f"[INFO] クロスフェード {CROSSFADE:.2f} 秒で合成します。")
-        video = crossfade_compose(clips, overlap=float(CROSSFADE), size=size)
-
-    # BGM（任意）
-    audio_flag = False
-    audio_codec = None
-    if BGM_PATH and os.path.isfile(BGM_PATH):
-        print(f"[INFO] BGM を合成します: {BGM_PATH}")
-        bgm = AudioFileClip(BGM_PATH)
-        if bgm.duration < video.duration:
-            bgm = afx.audio_loop(bgm, duration=video.duration)
-        else:
-            bgm = bgm.subclip(0, video.duration)
-        vol = max(0.0, min(1.0, float(BGM_VOLUME)))
-        bgm = bgm.fx(afx.volumex, vol)
-        # 仕上げに軽くフェードイン/アウト（任意）
-        # bgm = bgm.fx(afx.audio_fadein, 0.5).fx(afx.audio_fadeout, 0.5)
-        video = video.set_audio(bgm)
-        audio_flag = True
-        audio_codec = "aac"
-    else:
-        print("[INFO] BGM なし（無音で出力します）")
+        print(f"[INFO] クロスフェード {CROSSFADE:.2f} 秒（ペアごとに安全値へ丸め）で合成します。")
+        video = crossfade_compose_var(
+            clips=clips,
+            durations=durations,
+            base_overlap=float(CROSSFADE),
+            size=size,
+        )
 
     # 出力
     out_path = OUTPUT_MP4
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
     print(f"[INFO] 書き出し中 ... → {out_path}")
-    video.write_videofile(
-        out_path,
-        fps=int(FPS),
-        codec="libx264",
-        audio=audio_flag,
-        audio_codec=audio_codec if audio_flag else None,
-        preset="medium",
-        threads=os.cpu_count() or 4,
-        temp_audiofile="~temp-audio.m4a",
-        remove_temp=True,
-    )
-    print("[INFO] 完了しました。")
 
+
+    # ---- ここからクリーンアップを保証するための try/finally ----
+    raw_bgm = None       # BGM の元クリップ
+    bgm_clip = None      # ループ/トリム/音量適用済み
+    raw_voice = None     # VOICE の元クリップ
+    voice_clip = None    # トリム/音量適用済み
+    audio_mix = None     # 合成後の CompositeAudioClip
+
+    try:
+        audio_flag = False
+        audio_codec = None
+
+        # --- BGM セット（存在する場合） ---
+        if BGM_PATH and os.path.isfile(BGM_PATH):
+            print(f"[INFO] BGM を読み込みます: {BGM_PATH}")
+            raw_bgm = AudioFileClip(BGM_PATH)
+            # 長さ合わせ（ループ or トリム）
+            if raw_bgm.duration < video.duration:
+                bgm_clip = afx.audio_loop(raw_bgm, duration=video.duration)
+            else:
+                bgm_clip = raw_bgm.subclip(0, video.duration)
+            # 音量（0〜1にクリップ）
+            vol_bgm = max(0.0, min(1.0, float(BGM_VOLUME)))
+            bgm_clip = bgm_clip.fx(afx.volumex, vol_bgm)
+
+        # --- VOICE セット（存在する場合） ---
+        if VOICE_PATH and os.path.isfile(VOICE_PATH):
+            print(f"[INFO] VOICE を読み込みます: {VOICE_PATH}")
+            raw_voice  = AudioFileClip(VOICE_PATH)
+            # VOICE はループせず、動画尺でトリム
+            if raw_voice.duration > video.duration:
+                voice_clip = raw_voice.subclip(0, video.duration)
+            else:
+                voice_clip = raw_voice  # 短ければそのまま（無音部分はそのまま）
+            # 音量（0〜1にクリップ）
+            vol_voice = max(0.0, min(1.0, float(VOICE_VOLUME)))
+            voice_clip = voice_clip.fx(afx.volumex, vol_voice)
+
+        # --- 合成ロジック ---
+        if bgm_clip is not None and voice_clip is not None:
+            print("[INFO] BGM と VOICE をミックスして合成します。")
+            audio_mix = CompositeAudioClip([bgm_clip, voice_clip]).set_duration(video.duration)
+            video = video.set_audio(audio_mix)
+            audio_flag = True
+            audio_codec = "aac"
+
+        elif voice_clip is not None:
+            print("[INFO] VOICE のみを音声として使用します。")
+            # 念のため動画尺で切り上げ
+            video = video.set_audio(voice_clip.set_duration(video.duration))
+            audio_flag = True
+            audio_codec = "aac"
+
+        elif bgm_clip is not None:
+            print("[INFO] BGM のみを音声として使用します。")
+            video = video.set_audio(bgm_clip.set_duration(video.duration))
+            audio_flag = True
+            audio_codec = "aac"
+
+        else:
+            print("[INFO] BGM/VOICE なし（無音で出力します）")
+            audio_flag = False
+            audio_codec = None
+
+        # --- 書き出し ---
+        video.write_videofile(
+            out_path,
+            fps=int(FPS),
+            codec="libx264",
+            audio=audio_flag,
+            audio_codec=audio_codec if audio_flag else None,
+            preset="medium",
+            threads=os.cpu_count() or 4,
+            temp_audiofile="~temp-audio.m4a",
+            remove_temp=True,
+        )
+        print("[INFO] 完了しました。")
+
+    finally:
+        # クローズ順は「合成 → 子クリップ」を推奨
+        for obj in (audio_mix, bgm_clip, raw_bgm, voice_clip, raw_voice):
+            try:
+                if obj is not None:
+                    obj.close()
+            except Exception:
+                pass
+        try:
+            if video is not None:
+                video.close()
+        except Exception:
+            pass
+        for c in clips:
+            try:
+                c.close()
+            except Exception:
+                pass
+        try:
+            import gc, time
+            del audio_mix, bgm_clip, raw_bgm, voice_clip, raw_voice, video, clips
+            gc.collect()
+            time.sleep(0.1)
+        except Exception:
+            pass
+    # ---- ここまで ----
 
 if __name__ == "__main__":
     main()
