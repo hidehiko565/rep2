@@ -22,6 +22,23 @@ Desc :
 
 """
 
+"""
+フロー
+1. 元動画から音声のみを抜き取る
+ffmpeg -i input/video.mp4 -vn -ac 1 -ar 16000 -sample_fmt s16 input/audio.wav
+
+2. 音声 → 口パク用のイラスト生成（Python）
+python lipsync_generate.py
+
+3. 口パクイラストを元動画に重ねる
+ffmpeg -i input/video.mp4 -framerate 30 -i out/frames/frame_%06d.png -filter_complex "[1:v]scale=150:-1[scaled]; [0:v][scaled]overlay=20:main_h-h-20:format=auto" -map 0:a? -c:v libx264 -pix_fmt yuv420p -profile:v high -level 4.0 -crf 18 -preset veryfast -c:a aac -b:a 192k -movflags +faststart -shortest output.mp4
+
+
+"""
+
+
+
+
 import os
 import math
 from dataclasses import dataclass
